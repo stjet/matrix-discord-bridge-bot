@@ -2,7 +2,9 @@ import { appendFileSync, readFileSync } from "fs";
 
 import * as discord from "discord.js";
 import * as matrix from "matrix-js-sdk";
-import { logger } from 'matrix-js-sdk/lib/logger.js';
+import { logger } from "matrix-js-sdk/lib/logger.js";
+
+import { handle_command, get_banlist } from "./discord_commands.js";
 
 logger.disableAll();
 
@@ -32,6 +34,10 @@ matrix_client.startClient({ initialSyncLimit: 0 });
 
 discord_client.on("messageCreate", async (message) => {
   if (!MAPPING[message.channelId] || message.author.id === discord_client.user.id || (message.webhookId && (await message.fetchWebhook()).name === "Matrix Bridge")) return;
+  if (message.content.startsWith("bridge!")) {
+    const parts = message.content.replace("bridge!", "").split(" ");
+    await handle_command(message, parts);
+  }
   const channel_id = message.channelId;
   let attachments = "";
   for (const [_, a] of message.attachments) {
@@ -51,7 +57,7 @@ discord_client.on("messageCreate", async (message) => {
 matrix_client.on(matrix.RoomEvent.Timeline, async (event, room) => {
   if (event.getType() !== "m.room.message") return;
   const { sender, content, room_id } = event.event;
-  if (!MAPPING[room_id] || sender === process.env.MATRIX_USER) return;
+  if (!MAPPING[room_id] || sender == process.env.MATRIX_USER || get_banlist()[sender.toLowerCase()]) return;
   const channel_id = MAPPING[room_id];
   let webhook_id = process.env[`webhookid_${channel_id}`];
   let webhook_token = process.env[`webhooktoken_${channel_id}`];
@@ -66,11 +72,12 @@ matrix_client.on(matrix.RoomEvent.Timeline, async (event, room) => {
     process.env[`webhooktoken_${channel_id}`] = webhook_token;
     appendFileSync(".env", `\nwebhookid_${channel_id}=${webhook_id}\nwebhooktoken_${channel_id}=${webhook_token}`);
   }
+  const display_name = event.sender.rawDisplayName;
   const webhook_client = new discord.WebhookClient({ id: webhook_id, token: webhook_token });
   await webhook_client.send({
     content: content.body,
-    username: sender,
-    avatarURL: event.sender.getAvatarUrl(matrix_client.getHomeserverUrl(), 128, 128, "crop", true, false).replace("media/v3", "client/v1/media"),
+    username: display_name == sender ? sender : `${display_name} (${sender})`,
+    avatarURL: event.sender.getAvatarUrl(matrix_client.getHomeserverUrl(), 128, 128, "crop", true, false)?.replace("media/v3", "client/v1/media"),
   });
   //
   //await (await discord_client.channels.fetch(channel_id) as discord.TextChannel).send(`**${sender}:** ${content.body}`);
